@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>4-QAM Interactive Simulator</title>
+<style>
+body { background-color: #000; color: #fff; font-family: sans-serif; }
+canvas { display: block; margin: 10px 0; border: 1px solid #444; }
+input[type=text] { width: 50%; padding: 5px; font-size: 16px; color: #000; background-color: #fff; }
+</style>
+</head>
+<body>
+<h1>4-QAM Interactive Simulator</h1>
+<p>Enter a binary sequence (multiple of 2 bits) to simulate the corresponding 4-QAM signal:</p>
+<input type="text" id="bitSequence" value="00011011" />
+<canvas id="canvasIcos" width="400" height="120"></canvas>
+<canvas id="canvasQsin" width="400" height="120"></canvas>
+<canvas id="canvasCombined" width="400" height="120"></canvas>
+<canvas id="canvasIcosMix" width="400" height="120"></canvas>
+<canvas id="canvasQsinMix" width="400" height="120"></canvas>
+<canvas id="canvasIext" width="400" height="120"></canvas>
+<canvas id="canvasQext" width="400" height="120"></canvas>
+<canvas id="canvasConstellation" width="400" height="400"></canvas>
+<script>
+(() => {
+  const input = document.getElementById('bitSequence');
+  // Canvas 2D contexts
+  const ctxIcos = document.getElementById('canvasIcos').getContext('2d');
+  const ctxQsin = document.getElementById('canvasQsin').getContext('2d');
+  const ctxCombined = document.getElementById('canvasCombined').getContext('2d');
+  const ctxIcosMix = document.getElementById('canvasIcosMix').getContext('2d');
+  const ctxQsinMix = document.getElementById('canvasQsinMix').getContext('2d');
+  const ctxIext = document.getElementById('canvasIext').getContext('2d');
+  const ctxQext = document.getElementById('canvasQext').getContext('2d');
+  const ctxConst = document.getElementById('canvasConstellation').getContext('2d');
+  // Simulation parameters
+  const f = 1;                          // carrier frequency (relative to symbol rate)
+  const twoPiF = 2 * Math.PI * f;
+  const samplesPerSymbol = 100;         // samples per symbol period for plotting
+  const pxPerSymbol = 100;              // horizontal pixels per symbol (for canvas scaling)
+  // Colors for drawing
+  const waveColor = 'cyan';
+  const axisColor = 'white';
+  const bitColor = { '00': 'lime', '01': 'red', '10': 'cyan', '11': 'magenta' };
+  // Update simulation whenever input changes
+  function updateSimulation() {
+    const bitStr = input.value.trim();
+    // Input validation: must be even number of bits (complete symbols) and only '0' or '1'
+    if (bitStr.length % 2 !== 0 || !/^[01]+$/.test(bitStr)) {
+      // Highlight invalid input and clear canvases
+      input.style.backgroundColor = '#f88';
+      [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext, ctxConst].forEach(ctx => {
+        ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      });
+      return;
+    }
+    input.style.backgroundColor = '#fff';  // reset input field style on valid input
+    const N = bitStr.length / 2;           // number of symbols
+    // Resize waveform canvases based on number of symbols (for consistent scaling)
+    const waveWidth = N * pxPerSymbol;
+    [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext].forEach(ctx => {
+      ctx.canvas.width = waveWidth;
+    });
+    // Resize constellation canvas (keep at least 300x300)
+    ctxConst.canvas.width = Math.max(waveWidth, 300);
+    ctxConst.canvas.height = ctxConst.canvas.width;
+    // Map each 2-bit symbol to I and Q values (+1 or -1)
+    const Ivals = [], Qvals = [];
+    for (let i = 0; i < bitStr.length; i += 2) {
+      Ivals.push(bitStr[i]   === '0' ?  1 : -1);
+      Qvals.push(bitStr[i+1] === '0' ?  1 : -1);
+    }
+    // Generate time-domain samples for one full waveform (all symbols)
+    const totalSamples = N * samplesPerSymbol;
+    const IcosSamples = new Array(totalSamples);
+    const QsinSamples = new Array(totalSamples);
+    const combinedSamples = new Array(totalSamples);
+    const IcosMixSamples = new Array(totalSamples);
+    const QsinMixSamples = new Array(totalSamples);
+    let k = 0;
+    for (let sym = 0; sym < N; sym++) {
+      const I = Ivals[sym], Q = Qvals[sym];
+      for (let n = 0; n < samplesPerSymbol; n++) {
+        const t = sym + n / samplesPerSymbol;
+        const cos = Math.cos(twoPiF * t);
+        const sin = Math.sin(twoPiF * t);
+        IcosSamples[k]     = I * cos;
+        QsinSamples[k]     = Q * sin;
+        combinedSamples[k] = I * cos + Q * sin;
+        // Mixer outputs (product with carrier)
+        IcosMixSamples[k]  = combinedSamples[k] * cos;
+        QsinMixSamples[k]  = combinedSamples[k] * sin;
+        k++;
+      }
+    }
+    // Helper function to draw a continuous waveform (with breaks at symbol boundaries)
+    function drawWave(ctx, data, yMax, label) {
+      const W = ctx.canvas.width, H = ctx.canvas.height;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);                 // clear background
+      ctx.strokeStyle = axisColor;
+      ctx.lineWidth = 1;
+      // Axes: horizontal time axis at 0 amplitude, vertical axis at t=0
+      const y0 = H / 2;
+      ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, H); ctx.stroke();
+      // Label the plot
+      ctx.fillStyle = axisColor;
+      ctx.font = '14px sans-serif';
+      ctx.fillText(label, 10, 15);
+      // Plot the waveform
+      ctx.strokeStyle = waveColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const scaleY = (H / 2) / yMax;
+      let x = 0;
+      let y = y0 - data[0] * scaleY;
+      ctx.moveTo(x, y);
+      const ptsPerSym = samplesPerSymbol;
+      for (let i = 1; i < data.length; i++) {
+        if (i % ptsPerSym === 0) {
+          // Start a new segment at symbol boundary (avoid connecting lines across jump discontinuities)
+          ctx.stroke();
+          ctx.beginPath();
+          x = (i / data.length) * W;
+          y = y0 - data[i] * scaleY;
+          ctx.moveTo(x, y);
+        } else {
+          x = (i / data.length) * W;
+          y = y0 - data[i] * scaleY;
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+    }
+    // Helper function to draw a stepwise (piecewise constant) waveform
+    function drawStepWave(ctx, values, yMax, label) {
+      const W = ctx.canvas.width, H = ctx.canvas.height;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = axisColor;
+      ctx.lineWidth = 1;
+      const y0 = H / 2;
+      ctx.beginPath(); ctx.moveTo(0, y0); ctx.lineTo(W, y0); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, H); ctx.stroke();
+      ctx.fillStyle = axisColor;
+      ctx.font = '14px sans-serif';
+      ctx.fillText(label, 10, 15);
+      ctx.strokeStyle = waveColor;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const scaleY = (H / 2) / yMax;
+      ctx.moveTo(0, y0 - values[0] * scaleY);
+      for (let sym = 0; sym < values.length; sym++) {
+        const xEnd = ((sym + 1) / values.length) * W;
+        const yVal = y0 - values[sym] * scaleY;
+        ctx.lineTo(xEnd, yVal);  // horizontal line through this symbol period
+        if (sym < values.length - 1) {
+          const yNext = y0 - values[sym+1] * scaleY;
+          ctx.lineTo(xEnd, yNext);  // vertical jump to next symbol level
+        }
+      }
+      ctx.stroke();
+    }
+    // Draw modulation waveforms
+    drawWave(ctxIcos,     IcosSamples,     1.2, 'I(t) * cos(2\u03C0f t)');
+    drawWave(ctxQsin,     QsinSamples,     1.2, 'Q(t) * sin(2\u03C0f t)');
+    drawWave(ctxCombined, combinedSamples, 1.5, 'I(t) * cos(2\u03C0f t) + Q(t) * sin(2\u03C0f t)');
+    // Draw demodulation (mixed) waveforms
+    drawWave(ctxIcosMix, IcosMixSamples, 1.5, '(I+Q) * cos(2\u03C0f t)');
+    drawWave(ctxQsinMix, QsinMixSamples, 1.5, '(I+Q) * sin(2\u03C0f t)');
+    // Draw extracted baseband signals
+    drawStepWave(ctxIext, Ivals, 1.2, 'Extracted I(t)');
+    drawStepWave(ctxQext, Qvals, 1.2, 'Extracted Q(t)');
+    // Draw constellation diagram
+    const Wc = ctxConst.canvas.width, Hc = ctxConst.canvas.height;
+    ctxConst.fillStyle = '#000';
+    ctxConst.fillRect(0, 0, Wc, Hc);
+    // Axes (I axis horizontal through center, Q axis vertical through center)
+    ctxConst.strokeStyle = axisColor;
+    ctxConst.lineWidth = 1;
+    ctxConst.beginPath();
+    ctxConst.moveTo(0, Hc/2);   ctxConst.lineTo(Wc, Hc/2);
+    ctxConst.moveTo(Wc/2, 0);   ctxConst.lineTo(Wc/2, Hc);
+    ctxConst.stroke();
+    // Axis labels
+    ctxConst.fillStyle = axisColor;
+    ctxConst.font = '16px sans-serif';
+    ctxConst.fillText('I', Wc - 15, Hc/2 - 5);
+    ctxConst.fillText('Q', Wc/2 + 5, 15);
+    ctxConst.font = '14px sans-serif';
+    ctxConst.fillText('Constellation Diagram', 10, 20);
+    // Plot each symbol as a dot in the I-Q plane
+    const r = 5;
+    for (let sym = 0; sym < N; sym++) {
+      const bits = bitStr[2*sym] + bitStr[2*sym+1];
+      const I = Ivals[sym], Q = Qvals[sym];
+      const x = Wc/2 + I * (Wc/4);
+      const y = Hc/2 - Q * (Hc/4);
+      ctxConst.fillStyle = bitColor[bits] || 'white';
+      ctxConst.beginPath();
+      ctxConst.arc(x, y, r, 0, 2*Math.PI);
+      ctxConst.fill();
+      // label the point with its bit pair
+      ctxConst.fillStyle = axisColor;
+      const labelOffsetX = (I >= 0 ? 10 : -20);
+      const labelOffsetY = (Q >= 0 ? -10 : 20);
+      ctxConst.fillText(bits, x + labelOffsetX, y + labelOffsetY);
+    }
+  }
+  updateSimulation();                      // initial draw on page load with default bits
+  input.addEventListener('input', updateSimulation);
+})();
+</script>
+</body>
+</html>
