@@ -16,6 +16,8 @@ label { display: inline-block; margin-top: 8px; }
 <input type="text" id="bitSequence" value="00011011" />
 <p>Carrier frequency f (relative to symbol rate):</p>
 <input type="number" id="frequency" value="1" step="0.1" min="0" />
+<p>Noise strength (AWGN, amplitude units):</p>
+<input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="2" />
 <canvas id="canvasIcos" width="400" height="120"></canvas>
 <canvas id="canvasQsin" width="400" height="120"></canvas>
 <canvas id="canvasCombined" width="400" height="120"></canvas>
@@ -28,6 +30,7 @@ label { display: inline-block; margin-top: 8px; }
 (() => {
   const input = document.getElementById('bitSequence');
   const freqInput = document.getElementById('frequency');
+  const noiseInput = document.getElementById('noiseStrength');
   // Canvas 2D contexts
   const ctxIcos = document.getElementById('canvasIcos').getContext('2d');
   const ctxQsin = document.getElementById('canvasQsin').getContext('2d');
@@ -37,6 +40,13 @@ label { display: inline-block; margin-top: 8px; }
   const ctxIext = document.getElementById('canvasIext').getContext('2d');
   const ctxQext = document.getElementById('canvasQext').getContext('2d');
   const ctxConst = document.getElementById('canvasConstellation').getContext('2d');
+  // Random normal generator (Box-Muller)
+  function randn() {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  }
   // Simulation parameters
   const pxPerSymbol = 100;              // horizontal pixels per symbol (for canvas scaling)
   // Colors for drawing
@@ -68,6 +78,14 @@ label { display: inline-block; margin-top: 8px; }
     const twoPiF = 2 * Math.PI * f;
     // Choose samples per symbol to maintain reasonable resolution across frequencies
     const samplesPerSymbol = Math.max(100, Math.round(f * 100));
+    // Read noise strength (standard deviation in same amplitude units)
+    let ns = parseFloat(noiseInput.value);
+    if (!Number.isFinite(ns) || ns < 0) {
+      noiseInput.style.backgroundColor = '#f88';
+      ns = 0;
+    } else {
+      noiseInput.style.backgroundColor = '#fff';
+    }
     // Resize waveform canvases based on number of symbols (for consistent scaling)
     const waveWidth = N * pxPerSymbol;
     [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext].forEach(ctx => {
@@ -99,12 +117,28 @@ label { display: inline-block; margin-top: 8px; }
         const sin = Math.sin(twoPiF * t);
         IcosSamples[k]     = I * cos;
         QsinSamples[k]     = Q * sin;
-        combinedSamples[k] = I * cos + Q * sin;
+        const noise = ns * randn();
+        const combinedNoisy = I * cos + Q * sin + noise;
+        combinedSamples[k] = combinedNoisy;
         // Mixer outputs (product with carrier)
-        IcosMixSamples[k]  = combinedSamples[k] * cos;
-        QsinMixSamples[k]  = combinedSamples[k] * sin;
+        IcosMixSamples[k]  = combinedNoisy * cos;
+        QsinMixSamples[k]  = combinedNoisy * sin;
         k++;
       }
+    }
+    // Integrate-and-dump over each symbol to estimate I/Q from noisy mixed signals
+    const Iest = new Array(N);
+    const Qest = new Array(N);
+    for (let sym = 0; sym < N; sym++) {
+      let sumI = 0, sumQ = 0;
+      const base = sym * samplesPerSymbol;
+      for (let n = 0; n < samplesPerSymbol; n++) {
+        sumI += IcosMixSamples[base + n];
+        sumQ += QsinMixSamples[base + n];
+      }
+      // Normalize; ideal average of cos^2/sin^2 over an integer cycles is 1/2
+      Iest[sym] = (2 / samplesPerSymbol) * sumI;
+      Qest[sym] = (2 / samplesPerSymbol) * sumQ;
     }
     // Helper function to draw a continuous waveform (with breaks at symbol boundaries)
     function drawWave(ctx, data, yMax, label) {
@@ -178,13 +212,14 @@ label { display: inline-block; margin-top: 8px; }
     // Draw modulation waveforms
     drawWave(ctxIcos,     IcosSamples,     1.2, 'I(t) * cos(2\u03C0f t)');
     drawWave(ctxQsin,     QsinSamples,     1.2, 'Q(t) * sin(2\u03C0f t)');
-    drawWave(ctxCombined, combinedSamples, 1.5, 'I(t) * cos(2\u03C0f t) + Q(t) * sin(2\u03C0f t)');
+    drawWave(ctxCombined, combinedSamples, 1.5 + 3*ns, 'I(t) * cos(2\u03C0f t) + Q(t) * sin(2\u03C0f t) + noise');
     // Draw demodulation (mixed) waveforms
-    drawWave(ctxIcosMix, IcosMixSamples, 1.5, '(I+Q) * cos(2\u03C0f t)');
-    drawWave(ctxQsinMix, QsinMixSamples, 1.5, '(I+Q) * sin(2\u03C0f t)');
-    // Draw extracted baseband signals
-    drawStepWave(ctxIext, Ivals, 1.2, 'Extracted I(t)');
-    drawStepWave(ctxQext, Qvals, 1.2, 'Extracted Q(t)');
+    drawWave(ctxIcosMix, IcosMixSamples, 1.5 + 3*ns, '(I+Q+noise) * cos(2\u03C0f t)');
+    drawWave(ctxQsinMix, QsinMixSamples, 1.5 + 3*ns, '(I+Q+noise) * sin(2\u03C0f t)');
+    // Draw extracted baseband signals (noisy estimates)
+    const yMaxEst = 1.2 + 2 * ns;
+    drawStepWave(ctxIext, Iest, yMaxEst, 'Estimated I(t) from noisy signal');
+    drawStepWave(ctxQext, Qest, yMaxEst, 'Estimated Q(t) from noisy signal');
     // Draw constellation diagram
     const Wc = ctxConst.canvas.width, Hc = ctxConst.canvas.height;
     ctxConst.fillStyle = '#000';
@@ -208,8 +243,10 @@ label { display: inline-block; margin-top: 8px; }
     for (let sym = 0; sym < N; sym++) {
       const bits = bitStr[2*sym] + bitStr[2*sym+1];
       const I = Ivals[sym], Q = Qvals[sym];
-      const x = Wc/2 + I * (Wc/4);
-      const y = Hc/2 - Q * (Hc/4);
+      const dI = ns * randn();
+      const dQ = ns * randn();
+      const x = Wc/2 + (I + dI) * (Wc/4);
+      const y = Hc/2 - (Q + dQ) * (Hc/4);
       ctxConst.fillStyle = bitColor[bits] || 'white';
       ctxConst.beginPath();
       ctxConst.arc(x, y, r, 0, 2*Math.PI);
@@ -224,6 +261,7 @@ label { display: inline-block; margin-top: 8px; }
   updateSimulation();                      // initial draw on page load with default bits
   input.addEventListener('input', updateSimulation);
   freqInput.addEventListener('input', updateSimulation);
+  noiseInput.addEventListener('input', updateSimulation);
 })();
 </script>
 </body>
