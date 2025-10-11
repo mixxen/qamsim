@@ -17,7 +17,9 @@ label { display: inline-block; margin-top: 8px; }
 <p>Carrier frequency f (relative to symbol rate):</p>
 <input type="number" id="frequency" value="1" step="0.1" min="0" />
 <p>Noise strength (AWGN, amplitude units):</p>
-<input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="2" />
+<input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="10" />
+<p id="snrDisplay">Estimated SNR: —</p>
+<p id="powerDisplay">Power: Ps=—, Pn=—, SNR(linear)=—</p>
 <canvas id="canvasIcos" width="400" height="120"></canvas>
 <canvas id="canvasQsin" width="400" height="120"></canvas>
 <canvas id="canvasCombined" width="400" height="120"></canvas>
@@ -31,6 +33,8 @@ label { display: inline-block; margin-top: 8px; }
   const input = document.getElementById('bitSequence');
   const freqInput = document.getElementById('frequency');
   const noiseInput = document.getElementById('noiseStrength');
+  const snrDisplay = document.getElementById('snrDisplay');
+  const powerDisplay = document.getElementById('powerDisplay');
   // Canvas 2D contexts
   const ctxIcos = document.getElementById('canvasIcos').getContext('2d');
   const ctxQsin = document.getElementById('canvasQsin').getContext('2d');
@@ -63,6 +67,8 @@ label { display: inline-block; margin-top: 8px; }
       [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext, ctxConst].forEach(ctx => {
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
       });
+      if (snrDisplay) snrDisplay.textContent = 'Estimated SNR: — (invalid input)';
+      if (powerDisplay) powerDisplay.textContent = 'Power: Ps=—, Pn=—, SNR(linear)=—, SNR_th(linear)=—';
       return;
     }
     input.style.backgroundColor = '#fff';  // reset input field style on valid input
@@ -139,6 +145,35 @@ label { display: inline-block; margin-top: 8px; }
       // Normalize; ideal average of cos^2/sin^2 over an integer cycles is 1/2
       Iest[sym] = (2 / samplesPerSymbol) * sumI;
       Qest[sym] = (2 / samplesPerSymbol) * sumQ;
+    }
+    // Estimate SNR: signal power from ideal symbols vs error power of estimates
+    let sigPowSum = 0, noisePowSum = 0;
+    for (let sym = 0; sym < N; sym++) {
+      const sPow = Ivals[sym]*Ivals[sym] + Qvals[sym]*Qvals[sym];
+      const eI = Iest[sym] - Ivals[sym];
+      const eQ = Qest[sym] - Qvals[sym];
+      const nPow = eI*eI + eQ*eQ;
+      sigPowSum += sPow;
+      noisePowSum += nPow;
+    }
+    const Ps = sigPowSum / N;         // average signal power per symbol
+    const Pn = noisePowSum / N;       // average noise (error) power per symbol
+    const snrLinear = (Pn > 0) ? (Ps / Pn) : Infinity;
+    const snrDb = Number.isFinite(snrLinear) ? (10 * Math.log10(snrLinear)) : Infinity;
+    // Theoretical SNR for integrate-and-dump with f cycles/symbol (integer best): sps / (2 * sigma^2)
+    const snrThLinear = (ns > 0) ? (samplesPerSymbol / (2 * ns * ns)) : Infinity;
+    const snrThDb = Number.isFinite(snrThLinear) ? (10 * Math.log10(snrThLinear)) : Infinity;
+    if (snrDisplay) {
+      const meas = Number.isFinite(snrDb) ? snrDb.toFixed(2) + ' dB' : '∞ dB';
+      const theo = Number.isFinite(snrThDb) ? snrThDb.toFixed(2) + ' dB' : '∞ dB';
+      snrDisplay.textContent = `Estimated SNR: ${meas} (theory: ${theo})`;
+    }
+    if (powerDisplay) {
+      const psStr = Ps.toFixed(3);
+      const pnStr = Pn.toFixed(3);
+      const snrLinStr = Number.isFinite(snrLinear) ? snrLinear.toFixed(2) : '∞';
+      const snrThLinStr = Number.isFinite(snrThLinear) ? snrThLinear.toFixed(2) : '∞';
+      powerDisplay.textContent = `Power: Ps=${psStr}, Pn=${pnStr}, SNR(linear)=${snrLinStr}, SNR_th(linear)=${snrThLinStr}`;
     }
     // Helper function to draw a continuous waveform (with breaks at symbol boundaries)
     function drawWave(ctx, data, yMax, label) {
@@ -237,16 +272,39 @@ label { display: inline-block; margin-top: 8px; }
     ctxConst.fillText('I', Wc - 15, Hc/2 - 5);
     ctxConst.fillText('Q', Wc/2 + 5, 15);
     ctxConst.font = '14px sans-serif';
-    ctxConst.fillText('Constellation Diagram', 10, 20);
-    // Plot each symbol as a dot in the I-Q plane
+    ctxConst.fillText('Measured Constellation (Iest,Qest)', 10, 20);
+    // Determine dynamic scaling so all points remain visible with margin
+    const margin = 25;
+    let maxAbs = 1;
+    for (let sym = 0; sym < N; sym++) {
+      const a = Math.abs(Iest[sym]);
+      const b = Math.abs(Qest[sym]);
+      if (a > maxAbs) maxAbs = a;
+      if (b > maxAbs) maxAbs = b;
+    }
+    const maxRadiusPx = Math.min(Wc, Hc) / 2 - margin;
+    const unitToPx = maxRadiusPx / maxAbs;   // pixels per 1.0 amplitude unit
+    // Draw reference lines at ±1 (dashed)
+    ctxConst.save();
+    ctxConst.strokeStyle = '#444';
+    ctxConst.setLineDash([4, 4]);
+    // Vertical lines at I = ±1
+    ctxConst.beginPath();
+    ctxConst.moveTo(Wc/2 - unitToPx, 0); ctxConst.lineTo(Wc/2 - unitToPx, Hc);
+    ctxConst.moveTo(Wc/2 + unitToPx, 0); ctxConst.lineTo(Wc/2 + unitToPx, Hc);
+    // Horizontal lines at Q = ±1
+    ctxConst.moveTo(0, Hc/2 - unitToPx); ctxConst.lineTo(Wc, Hc/2 - unitToPx);
+    ctxConst.moveTo(0, Hc/2 + unitToPx); ctxConst.lineTo(Wc, Hc/2 + unitToPx);
+    ctxConst.stroke();
+    ctxConst.restore();
+    // Plot each symbol as a dot in the I-Q plane (measured estimates)
     const r = 5;
     for (let sym = 0; sym < N; sym++) {
       const bits = bitStr[2*sym] + bitStr[2*sym+1];
-      const I = Ivals[sym], Q = Qvals[sym];
-      const dI = ns * randn();
-      const dQ = ns * randn();
-      const x = Wc/2 + (I + dI) * (Wc/4);
-      const y = Hc/2 - (Q + dQ) * (Hc/4);
+      const I = Iest[sym];
+      const Q = Qest[sym];
+      const x = Wc/2 + I * unitToPx;
+      const y = Hc/2 - Q * unitToPx;
       ctxConst.fillStyle = bitColor[bits] || 'white';
       ctxConst.beginPath();
       ctxConst.arc(x, y, r, 0, 2*Math.PI);
