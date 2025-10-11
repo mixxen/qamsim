@@ -6,13 +6,16 @@
 <style>
 body { background-color: #000; color: #fff; font-family: sans-serif; }
 canvas { display: block; margin: 10px 0; border: 1px solid #444; }
-input[type=text] { width: 50%; padding: 5px; font-size: 16px; color: #000; background-color: #fff; }
+input[type=text], input[type=number] { width: 50%; padding: 5px; font-size: 16px; color: #000; background-color: #fff; }
+label { display: inline-block; margin-top: 8px; }
 </style>
 </head>
 <body>
 <h1>4-QAM Interactive Simulator</h1>
 <p>Enter a binary sequence (multiple of 2 bits) to simulate the corresponding 4-QAM signal:</p>
 <input type="text" id="bitSequence" value="00011011" />
+<p>Carrier frequency f (relative to symbol rate):</p>
+<input type="number" id="frequency" value="1" step="0.1" min="0" />
 <canvas id="canvasIcos" width="400" height="120"></canvas>
 <canvas id="canvasQsin" width="400" height="120"></canvas>
 <canvas id="canvasCombined" width="400" height="120"></canvas>
@@ -24,6 +27,7 @@ input[type=text] { width: 50%; padding: 5px; font-size: 16px; color: #000; backg
 <script>
 (() => {
   const input = document.getElementById('bitSequence');
+  const freqInput = document.getElementById('frequency');
   // Canvas 2D contexts
   const ctxIcos = document.getElementById('canvasIcos').getContext('2d');
   const ctxQsin = document.getElementById('canvasQsin').getContext('2d');
@@ -34,9 +38,6 @@ input[type=text] { width: 50%; padding: 5px; font-size: 16px; color: #000; backg
   const ctxQext = document.getElementById('canvasQext').getContext('2d');
   const ctxConst = document.getElementById('canvasConstellation').getContext('2d');
   // Simulation parameters
-  const f = 1;                          // carrier frequency (relative to symbol rate)
-  const twoPiF = 2 * Math.PI * f;
-  const samplesPerSymbol = 100;         // samples per symbol period for plotting
   const pxPerSymbol = 100;              // horizontal pixels per symbol (for canvas scaling)
   // Colors for drawing
   const waveColor = 'cyan';
@@ -56,6 +57,17 @@ input[type=text] { width: 50%; padding: 5px; font-size: 16px; color: #000; backg
     }
     input.style.backgroundColor = '#fff';  // reset input field style on valid input
     const N = bitStr.length / 2;           // number of symbols
+    // Read and validate carrier frequency f (relative to symbol rate)
+    let f = parseFloat(freqInput.value);
+    if (!Number.isFinite(f) || f < 0) {
+      freqInput.style.backgroundColor = '#f88';
+      f = 1; // fallback default
+    } else {
+      freqInput.style.backgroundColor = '#fff';
+    }
+    const twoPiF = 2 * Math.PI * f;
+    // Choose samples per symbol to maintain reasonable resolution across frequencies
+    const samplesPerSymbol = Math.max(100, Math.round(f * 100));
     // Resize waveform canvases based on number of symbols (for consistent scaling)
     const waveWidth = N * pxPerSymbol;
     [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext].forEach(ctx => {
@@ -211,6 +223,7 @@ input[type=text] { width: 50%; padding: 5px; font-size: 16px; color: #000; backg
   }
   updateSimulation();                      // initial draw on page load with default bits
   input.addEventListener('input', updateSimulation);
+  freqInput.addEventListener('input', updateSimulation);
 })();
 </script>
 </body>
