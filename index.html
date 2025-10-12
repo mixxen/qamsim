@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>4-QAM Interactive Simulator</title>
+<title>QAM Interactive Simulator</title>
 <style>
 body { background-color: #000; color: #fff; font-family: sans-serif; }
 canvas { display: block; margin: 10px 0; border: 1px solid #444; }
@@ -11,13 +11,20 @@ label { display: inline-block; margin-top: 8px; }
 </style>
 </head>
 <body>
-<h1>4-QAM Interactive Simulator</h1>
-<p>Enter a binary sequence (multiple of 2 bits) to simulate the corresponding 4-QAM signal:</p>
+<h1>QAM Interactive Simulator</h1>
+<p>Enter a binary sequence (multiple of log2(M) bits) to simulate the corresponding M-QAM signal:</p>
 <input type="text" id="bitSequence" value="00011011" />
 <p>Carrier frequency f (relative to symbol rate):</p>
 <input type="number" id="frequency" value="1" step="0.1" min="0" />
 <p>Noise strength (AWGN, per-sample stdev):</p>
 <input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="10" />
+<p>Modulation order M:</p>
+<select id="modOrder">
+  <option value="4" selected>4-QAM (QPSK)</option>
+  <option value="16">16-QAM</option>
+  <option value="64">64-QAM</option>
+  <option value="256">256-QAM</option>
+</select>
 <p id="snrDisplay">Estimated SNR: —</p>
 <p id="powerDisplay">Power: Ps=—, Pn=—, SNR(linear)=—, SNR_th(linear)=—</p>
 
@@ -35,6 +42,7 @@ label { display: inline-block; margin-top: 8px; }
   const input = document.getElementById('bitSequence');
   const freqInput = document.getElementById('frequency');
   const noiseInput = document.getElementById('noiseStrength');
+  const modOrderSelect = document.getElementById('modOrder');
   const snrDisplay = document.getElementById('snrDisplay');
   const powerDisplay = document.getElementById('powerDisplay');
 
@@ -47,6 +55,9 @@ label { display: inline-block; margin-top: 8px; }
   const ctxIext = document.getElementById('canvasIext').getContext('2d');
   const ctxQext = document.getElementById('canvasQext').getContext('2d');
   const ctxConst = document.getElementById('canvasConstellation').getContext('2d');
+  // Preserve initial constellation canvas size (keep static)
+  const CONST_W0 = ctxConst.canvas.width;
+  const CONST_H0 = ctxConst.canvas.height;
 
   // Random normal generator (Box–Muller)
   function randn() {
@@ -61,13 +72,43 @@ label { display: inline-block; margin-top: 8px; }
   const waveColor = 'cyan';
   const axisColor = 'white';
   const bitColor = { '00': 'lime', '01': 'red', '10': 'cyan', '11': 'magenta' };
+  function colorForBits(bits) {
+    if (bits.length === 2 && bitColor[bits]) return bitColor[bits];
+    // Hash bits to a hue for variety
+    let h = 0;
+    for (let i = 0; i < bits.length; i++) h = (h * 31 + (bits.charCodeAt(i) & 255)) >>> 0;
+    const hue = h % 360;
+    return `hsl(${hue}, 80%, 60%)`;
+  }
+
+  // --- helpers: Gray-coded PAM mapping for square M-QAM ---
+  function bitsToInt(bitStr) {
+    let v = 0; for (let i = 0; i < bitStr.length; i++) v = (v << 1) | (bitStr[i] === '1' ? 1 : 0); return v;
+  }
+  function grayToBinary(g) {
+    let b = 0; for (; g; g >>= 1) b ^= g; return b;
+  }
+  function pamFromGrayBits(bits) {
+    const L = 1 << bits.length; // levels per axis
+    const g = bitsToInt(bits);
+    const idx = grayToBinary(g);
+    return -(L - 1) + 2 * idx; // levels: -L+1, -L+3, ..., +L-1
+  }
 
   // keep a fixed number of samples per symbol ----
   const samplesPerSymbol = 400; // constant (prevents SNR from changing with f)
 
   function updateSimulation() {
     const bitStr = input.value.trim();
-    if (bitStr.length % 2 !== 0 || !/^[01]+$/.test(bitStr)) {
+    const M = parseInt(modOrderSelect.value, 10) || 4;
+    const m = Math.log2(M) | 0;        // bits per symbol
+    const kAxis = m / 2 | 0;           // bits per axis (square QAM)
+    if (m % 2 !== 0) {
+      // guard: only square M supported; fallback to 4-QAM
+      modOrderSelect.value = '4';
+      return updateSimulation();
+    }
+    if (bitStr.length === 0 || bitStr.length % m !== 0 || !/^[01]+$/.test(bitStr)) {
       input.style.backgroundColor = '#f88';
       [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext, ctxConst].forEach(ctx => {
         ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -78,7 +119,7 @@ label { display: inline-block; margin-top: 8px; }
     }
     input.style.backgroundColor = '#fff';
 
-    const N = bitStr.length / 2;
+    const N = bitStr.length / m;
 
     // Carrier frequency (cycles per symbol)
     let f = parseFloat(freqInput.value);
@@ -97,14 +138,20 @@ label { display: inline-block; margin-top: 8px; }
     // Resize canvases
     const waveWidth = N * pxPerSymbol;
     [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext].forEach(ctx => ctx.canvas.width = waveWidth);
-    ctxConst.canvas.width = Math.max(waveWidth, 300);
-    ctxConst.canvas.height = ctxConst.canvas.width;
+    // Keep constellation size static regardless of waveform length
+    ctxConst.canvas.width = CONST_W0;
+    ctxConst.canvas.height = CONST_H0;
 
-    // Symbol mapping: '0' -> -1, '1' -> +1
-    const Ivals = [], Qvals = [];
-    for (let i = 0; i < bitStr.length; i += 2) {
-      Ivals.push(bitStr[i]   === '0' ? -1 : +1);
-      Qvals.push(bitStr[i+1] === '0' ? -1 : +1);
+    // Map symbols (Gray-coded per-axis PAM)
+    const Ivals = new Array(N), Qvals = new Array(N), symBitsArr = new Array(N);
+    for (let s = 0; s < N; s++) {
+      const start = s * m;
+      const symBits = bitStr.slice(start, start + m);
+      const iBits = symBits.slice(0, kAxis);
+      const qBits = symBits.slice(kAxis);
+      Ivals[s] = pamFromGrayBits(iBits);
+      Qvals[s] = pamFromGrayBits(qBits);
+      symBitsArr[s] = symBits;
     }
 
     // Buffers for plots
@@ -173,10 +220,10 @@ label { display: inline-block; margin-top: 8px; }
     }
 
     // --- measured SNR from symbol decisions ---
-    // signal power per symbol (at decision): I^2 + Q^2 = 2 for 4-QAM mapping
+    // signal power per symbol (at decision): I^2 + Q^2
     let sigPowSum = 0, noisePowSum = 0;
     for (let sym = 0; sym < N; sym++) {
-      const sPow = Ivals[sym]*Ivals[sym] + Qvals[sym]*Qvals[sym]; // = 2
+      const sPow = Ivals[sym]*Ivals[sym] + Qvals[sym]*Qvals[sym];
       const eI = Iest[sym] - Ivals[sym];
       const eQ = Qest[sym] - Qvals[sym];
       sigPowSum += sPow;
@@ -188,10 +235,10 @@ label { display: inline-block; margin-top: 8px; }
     const snrDb = Number.isFinite(snrLinear) ? (10 * Math.log10(snrLinear)) : Infinity;
 
     // --- theoretical SNR (decision stage), valid for any f with LS estimator ---
-    // Var(Î)=σ²·S/Δ, Var(Q̂)=σ²·C/Δ  ⇒  Pn_th=σ²·(C+S)/Δ,  Ps=2  ⇒ SNR=2·Δ / (σ²·(C+S))
+    // Var(Î)=σ²·S/Δ, Var(Q̂)=σ²·C/Δ  ⇒  Pn_th=σ²·(C+S)/Δ; Ps = average(I^2+Q^2)
     const det_the = C_the * S_the - Z_the * Z_the;
     const snrThLinear = (ns > 0 && det_the > 1e-12)
-      ? (2 * det_the) / (ns * ns * (C_the + S_the))
+      ? (Ps * det_the) / (ns * ns * (C_the + S_the))
       : Infinity;
     const snrThDb = Number.isFinite(snrThLinear) ? (10 * Math.log10(snrThLinear)) : Infinity;
 
@@ -250,16 +297,24 @@ label { display: inline-block; margin-top: 8px; }
       ctx.stroke();
     }
 
+    // Dynamic ranges based on symbol amplitudes
+    let Imax = 1, Qmax = 1;
+    for (let i = 0; i < N; i++) { Imax = Math.max(Imax, Math.abs(Ivals[i])); Qmax = Math.max(Qmax, Math.abs(Qvals[i])); }
+    const yI = Imax * 1.2;
+    const yQ = Qmax * 1.2;
+    const yC = (Imax + Qmax) * 1.2 + 3 * ns;
+
     // Draw modulation waveforms
-    drawWave(ctxIcos,     IcosSamples,     1.2, 'I(t) * cos(2\u03C0f t)');
-    drawWave(ctxQsin,     QsinSamples,     1.2, 'Q(t) * sin(2\u03C0f t)');
-    drawWave(ctxCombined, combinedSamples, 1.5 + 3*ns, 'Icos + Qsin + noise');
+    drawWave(ctxIcos,     IcosSamples,     yI, 'I(t) * cos(2\u03C0f t)');
+    drawWave(ctxQsin,     QsinSamples,     yQ, 'Q(t) * sin(2\u03C0f t)');
+    drawWave(ctxCombined, combinedSamples, yC, 'Icos + Qsin + noise');
     // Mixed (for illustration)
-    drawWave(ctxIcosMix,  IcosMixSamples,  1.5 + 3*ns, '(I+Q+noise) * cos(2\u03C0f t)');
-    drawWave(ctxQsinMix,  QsinMixSamples,  1.5 + 3*ns, '(I+Q+noise) * sin(2\u03C0f t)');
+    drawWave(ctxIcosMix,  IcosMixSamples,  yC, '(I+Q+noise) * cos(2\u03C0f t)');
+    drawWave(ctxQsinMix,  QsinMixSamples,  yC, '(I+Q+noise) * sin(2\u03C0f t)');
 
     // Estimated baseband
-    const yMaxEst = 1.2 + 2 * ns;
+    let estMax = 1; for (let i = 0; i < N; i++) { estMax = Math.max(estMax, Math.abs(Iest[i]), Math.abs(Qest[i])); }
+    const yMaxEst = estMax * 1.2 + 1e-3;
     drawStepWave(ctxIext, Iest, yMaxEst, 'Estimated I(t)');
     drawStepWave(ctxQext, Qest, yMaxEst, 'Estimated Q(t)');
 
@@ -273,29 +328,62 @@ label { display: inline-block; margin-top: 8px; }
     ctxConst.fillText('I', Wc - 15, Hc/2 - 5); ctxConst.fillText('Q', Wc/2 + 5, 15);
     ctxConst.font = '14px sans-serif'; ctxConst.fillText('Measured Constellation (Î,Q̂)', 10, 20);
 
-    const margin = 25; let maxAbs = 1;
-    for (let i = 0; i < N; i++) { maxAbs = Math.max(maxAbs, Math.abs(Iest[i]), Math.abs(Qest[i])); }
+    // Static scaling per current QAM order
+    const margin = 25;
+    const Laxis = 1 << kAxis;              // levels per axis (√M)
+    const maxAbs = Math.max(1, Laxis - 1); // max |symbol amplitude| (odd levels)
+    const visAbs = Math.max(1, Laxis);     // outer decision boundary at ±√M
     const maxRadiusPx = Math.min(Wc, Hc) / 2 - margin;
-    const unitToPx = maxRadiusPx / maxAbs;
+    const unitToPx = maxRadiusPx / visAbs; // pixels per amplitude unit
 
+    // Grid: draw symbol-level lines (odd levels) and decision boundaries (midpoints)
     ctxConst.save();
-    ctxConst.strokeStyle = '#444'; ctxConst.setLineDash([4,4]);
+    // Symbol levels (odd integers: ..., -3, -1, +1, +3, ...)
+    ctxConst.strokeStyle = '#666';
+    ctxConst.lineWidth = 1;
+    ctxConst.setLineDash([3, 6]);
     ctxConst.beginPath();
-    ctxConst.moveTo(Wc/2 - unitToPx, 0); ctxConst.lineTo(Wc/2 - unitToPx, Hc);
-    ctxConst.moveTo(Wc/2 + unitToPx, 0); ctxConst.lineTo(Wc/2 + unitToPx, Hc);
-    ctxConst.moveTo(0, Hc/2 - unitToPx); ctxConst.lineTo(Wc, Hc/2 - unitToPx);
-    ctxConst.moveTo(0, Hc/2 + unitToPx); ctxConst.lineTo(Wc, Hc/2 + unitToPx);
-    ctxConst.stroke(); ctxConst.restore();
+    for (let lvl = -maxAbs; lvl <= maxAbs; lvl += 2) {
+      const x = Wc/2 + lvl * unitToPx;   // vertical grid at I = lvl
+      const y = Hc/2 - lvl * unitToPx;   // horizontal grid at Q = lvl
+      ctxConst.moveTo(x, 0); ctxConst.lineTo(x, Hc);
+      ctxConst.moveTo(0, y); ctxConst.lineTo(Wc, y);
+    }
+    ctxConst.stroke();
+    // Decision boundaries (even integers incl. outermost ±√M)
+    ctxConst.setLineDash([]);
+    ctxConst.strokeStyle = '#aaa';
+    ctxConst.lineWidth = 1.5;
+    ctxConst.beginPath();
+    for (let b = -visAbs; b <= visAbs; b += 2) {
+      const xB = Wc/2 + b * unitToPx;
+      const yB = Hc/2 - b * unitToPx;
+      ctxConst.moveTo(xB, 0); ctxConst.lineTo(xB, Hc);
+      ctxConst.moveTo(0, yB); ctxConst.lineTo(Wc, yB);
+    }
+    ctxConst.stroke();
+    // Bounding square around the outer decision region (±√M)
+    const left = Wc/2 - visAbs * unitToPx;
+    const right = Wc/2 + visAbs * unitToPx;
+    const top = Hc/2 - visAbs * unitToPx;
+    const bottom = Hc/2 + visAbs * unitToPx;
+    ctxConst.strokeStyle = '#ddd';
+    ctxConst.lineWidth = 2;
+    ctxConst.strokeRect(left, top, right - left, bottom - top);
+    ctxConst.restore();
 
     const r = 5;
+    const clipAmp = Math.max(0, visAbs - r / unitToPx); // keep full dot inside bounds
     for (let sym = 0; sym < N; sym++) {
-      const bits = bitStr[2*sym] + bitStr[2*sym+1];
-      const x = Wc/2 + Iest[sym] * unitToPx;
-      const y = Hc/2 - Qest[sym] * unitToPx;
-      ctxConst.fillStyle = bitColor[bits] || 'white';
+      const bits = symBitsArr[sym];
+      const Ii = Math.max(-clipAmp, Math.min(clipAmp, Iest[sym]));
+      const Qi = Math.max(-clipAmp, Math.min(clipAmp, Qest[sym]));
+      const x = Wc/2 + Ii * unitToPx;
+      const y = Hc/2 - Qi * unitToPx;
+      ctxConst.fillStyle = colorForBits(bits);
       ctxConst.beginPath(); ctxConst.arc(x, y, r, 0, 2*Math.PI); ctxConst.fill();
       ctxConst.fillStyle = axisColor;
-      const dx = (Iest[sym] >= 0 ? 10 : -20), dy = (Qest[sym] >= 0 ? -10 : 20);
+      const dx = (Ii >= 0 ? 10 : -20), dy = (Qi >= 0 ? -10 : 20);
       ctxConst.fillText(bits, x + dx, y + dy);
     }
   }
@@ -304,6 +392,7 @@ label { display: inline-block; margin-top: 8px; }
   input.addEventListener('input', updateSimulation);
   freqInput.addEventListener('input', updateSimulation);
   noiseInput.addEventListener('input', updateSimulation);
+  modOrderSelect.addEventListener('change', updateSimulation);
 })();
 </script>
 </body>
