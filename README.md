@@ -66,3 +66,4 @@ An interactive, single‑file HTML/JS simulator for square M‑QAM. Enter a bit 
 
 - Open `index.html` in any modern web browser.
 - Edit the bit sequence or adjust the controls to see real‑time updates.
+- [Open in GitHub Pages](https://mixxen.github.io/qamsim/)
