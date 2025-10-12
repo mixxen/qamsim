@@ -2,6 +2,8 @@
 
 An interactive, single‑file HTML/JS simulator for square M‑QAM. Enter a bit sequence, choose the modulation order (4/16/64/256), adjust carrier frequency and noise, and see waveforms, constellation, and SNR update live.
 
+![alt text](image.png)
+
 ## Features
 
 - Modulation order selector: 4‑QAM, 16‑QAM, 64‑QAM, 256‑QAM
