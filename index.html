@@ -17,7 +17,7 @@ label { display: inline-block; margin-top: 8px; }
 <p>Carrier frequency f (relative to symbol rate):</p>
 <input type="number" id="frequency" value="1" step="0.1" min="0" />
 <p>Noise strength (AWGN, per-sample stdev):</p>
-<input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="10" />
+<input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="100" />
 <p>Modulation order M:</p>
 <select id="modOrder">
   <option value="4" selected>4-QAM (QPSK)</option>
@@ -297,6 +297,27 @@ label { display: inline-block; margin-top: 8px; }
       ctx.stroke();
     }
 
+    function drawHorizontalThresholds(ctx, levels, yMax) {
+      if (!levels || !levels.length) return;
+      const W = ctx.canvas.width, H = ctx.canvas.height;
+      const y0 = H / 2;
+      const scaleY = (H / 2) / yMax;
+      ctx.save();
+      ctx.setLineDash([4, 6]);
+      ctx.strokeStyle = '#888';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < levels.length; i++) {
+        const y = y0 - levels[i] * scaleY;
+        // skip if clearly off-canvas to avoid extra joins
+        if (y < -5 || y > H + 5) continue;
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // Dynamic ranges based on symbol amplitudes
     let Imax = 1, Qmax = 1;
     for (let i = 0; i < N; i++) { Imax = Math.max(Imax, Math.abs(Ivals[i])); Qmax = Math.max(Qmax, Math.abs(Qvals[i])); }
@@ -308,15 +329,22 @@ label { display: inline-block; margin-top: 8px; }
     drawWave(ctxIcos,     IcosSamples,     yI, 'I(t) * cos(2\u03C0f t)');
     drawWave(ctxQsin,     QsinSamples,     yQ, 'Q(t) * sin(2\u03C0f t)');
     drawWave(ctxCombined, combinedSamples, yC, 'Icos + Qsin + noise');
+    
     // Mixed (for illustration)
     drawWave(ctxIcosMix,  IcosMixSamples,  yC, '(I+Q+noise) * cos(2\u03C0f t)');
     drawWave(ctxQsinMix,  QsinMixSamples,  yC, '(I+Q+noise) * sin(2\u03C0f t)');
 
-    // Estimated baseband
-    let estMax = 1; for (let i = 0; i < N; i++) { estMax = Math.max(estMax, Math.abs(Iest[i]), Math.abs(Qest[i])); }
-    const yMaxEst = estMax * 1.2 + 1e-3;
+    // Estimated baseband (fixed theoretical axis range with 100% headroom)
+    const yMaxEst = Math.max(1, ((1 << kAxis) - 1) * 2.0);
     drawStepWave(ctxIext, Iest, yMaxEst, 'Estimated I(t)');
+    // Decision thresholds for current constellation (interior only)
+    const thresholds = [];
+    const Lthr = 1 << kAxis; // √M levels per axis
+    for (let b = -(Lthr - 2); b <= (Lthr - 2); b += 2) { thresholds.push(b); }
+    drawHorizontalThresholds(ctxIext, thresholds, yMaxEst);
+
     drawStepWave(ctxQext, Qest, yMaxEst, 'Estimated Q(t)');
+    drawHorizontalThresholds(ctxQext, thresholds, yMaxEst);
 
     // Constellation
     const Wc = ctxConst.canvas.width, Hc = ctxConst.canvas.height;
