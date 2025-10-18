@@ -15,6 +15,7 @@ An interactive, single‑file HTML/JS simulator for square M‑QAM. Enter a bit 
 - Constellation of measured `(Iest, Qest)` with static per‑order scaling and a fixed‑size canvas
   - Visible boundaries/grid at all PAM levels and decision lines
 - SNR display: measured and theoretical, plus Ps/Pn power readout
+ - Optional power normalization (default on): constellations are scaled so the average symbol energy Es=1 across all M, enabling fair SNR comparisons
 
 ## How It Works
 
@@ -55,12 +56,20 @@ An interactive, single‑file HTML/JS simulator for square M‑QAM. Enter a bit 
 - Theoretical SNR (for the LS estimator with per‑sample noise `σ`): computed from the cosine/sine Gram matrix over a symbol. For orthogonal carriers over the symbol (integer `f`) this reduces to the familiar integrate‑and‑dump result `SNR_linear ≈ sps / (2·σ²)`.
 - Samples‑per‑symbol (`sps`) used for estimation is fixed in the simulator, so changing `f` does not inflate SNR via extra averaging.
 
+### Power Normalization (Recommended)
+
+- For a fair comparison across modulation orders, the simulator can normalize average symbol energy to `Es = 1` for all `M` (checkbox enabled by default).
+- Square M‑QAM with unnormalized levels `±1,±3,…,±(√M−1)` has average symbol energy `Es = 2(M−1)/3`.
+  - Examples: 4‑QAM/QPSK `Es≈2`, 16‑QAM `Es≈10`. Their normalization factors are `1/√2` and `1/√10`, respectively.
+- Without normalization, higher‑order QAM appears to have higher SNR at fixed noise because its constellation points have larger energy. This is a simulation artifact due to fixed noise power with higher‑energy constellations, not an inherent advantage of higher‑order QAM.
+
 ## Controls
 
 - Modulation order `M`: 4, 16, 64, 256
 - Bit sequence: string of `0`/`1` with length a multiple of `log2(M)`
 - Frequency `f`: non‑negative number (relative to symbol rate)
 - Noise strength `σ`: AWGN standard deviation (0 disables noise)
+- Power normalization: checkbox to scale constellations so that `Es=1` across all `M`
 
 ## Run It
 

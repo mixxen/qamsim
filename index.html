@@ -18,6 +18,9 @@ label { display: inline-block; margin-top: 8px; }
 <input type="number" id="frequency" value="1" step="0.1" min="0" />
 <p>Noise strength (AWGN, per-sample stdev):</p>
 <input type="number" id="noiseStrength" value="0" step="0.05" min="0" max="100" />
+<p>Power normalization:</p>
+<label><input type="checkbox" id="normalizePower" checked /> Normalize average symbol energy (Es=1)</label>
+<div id="normInfo" style="color:#ccc; margin-top:4px;">Es used: — (scale=—, unnorm Es=—)</div>
 <p>Modulation order M:</p>
 <select id="modOrder">
   <option value="4" selected>4-QAM (QPSK)</option>
@@ -42,6 +45,8 @@ label { display: inline-block; margin-top: 8px; }
   const input = document.getElementById('bitSequence');
   const freqInput = document.getElementById('frequency');
   const noiseInput = document.getElementById('noiseStrength');
+  const normCheckbox = document.getElementById('normalizePower');
+  const normInfo = document.getElementById('normInfo');
   const modOrderSelect = document.getElementById('modOrder');
   const snrDisplay = document.getElementById('snrDisplay');
   const powerDisplay = document.getElementById('powerDisplay');
@@ -108,6 +113,15 @@ label { display: inline-block; margin-top: 8px; }
       modOrderSelect.value = '4';
       return updateSimulation();
     }
+    // Compute normalization state and show theoretical Es used
+    const EsAvgUnnormalized = 2 * (M - 1) / 3; // average Es for unnormalized square M-QAM
+    const scale = (normCheckbox && normCheckbox.checked)
+      ? (1 / Math.sqrt(Math.max(EsAvgUnnormalized, 1e-12)))
+      : 1;
+    const EsUsed = EsAvgUnnormalized * scale * scale;
+    if (normInfo) {
+      normInfo.textContent = `Es used: ${EsUsed.toFixed(3)} (scale=${scale.toFixed(3)}, unnorm Es=${EsAvgUnnormalized.toFixed(3)})`;
+    }
     if (bitStr.length === 0 || bitStr.length % m !== 0 || !/^[01]+$/.test(bitStr)) {
       input.style.backgroundColor = '#f88';
       [ctxIcos, ctxQsin, ctxCombined, ctxIcosMix, ctxQsinMix, ctxIext, ctxQext, ctxConst].forEach(ctx => {
@@ -142,15 +156,15 @@ label { display: inline-block; margin-top: 8px; }
     ctxConst.canvas.width = CONST_W0;
     ctxConst.canvas.height = CONST_H0;
 
-    // Map symbols (Gray-coded per-axis PAM)
+    // Map symbols (Gray-coded per-axis PAM), apply optional scaling
     const Ivals = new Array(N), Qvals = new Array(N), symBitsArr = new Array(N);
     for (let s = 0; s < N; s++) {
       const start = s * m;
       const symBits = bitStr.slice(start, start + m);
       const iBits = symBits.slice(0, kAxis);
       const qBits = symBits.slice(kAxis);
-      Ivals[s] = pamFromGrayBits(iBits);
-      Qvals[s] = pamFromGrayBits(qBits);
+      Ivals[s] = pamFromGrayBits(iBits) * scale;
+      Qvals[s] = pamFromGrayBits(qBits) * scale;
       symBitsArr[s] = symBits;
     }
 
@@ -166,8 +180,8 @@ label { display: inline-block; margin-top: 8px; }
     const Qest = new Array(N);
 
     let k = 0;
-    // We’ll also capture the basis Gram matrix for one symbol for the theory SNR
-    let C_the = 0, S_the = 0, Z_the = 0, haveTheoryGram = false;
+    // Accumulate Gram matrix terms across symbols for theory SNR
+    let Cacc = 0, Sacc = 0, Zacc = 0;
 
     for (let sym = 0; sym < N; sym++) {
       const I = Ivals[sym], Q = Qvals[sym];
@@ -214,9 +228,7 @@ label { display: inline-block; margin-top: 8px; }
         Qest[sym] = (Y * C - X * Z) / det;
       }
 
-      if (!haveTheoryGram) {
-        C_the = C; S_the = S; Z_the = Z; haveTheoryGram = true;
-      }
+      Cacc += C; Sacc += S; Zacc += Z;
     }
 
     // --- measured SNR from symbol decisions ---
@@ -233,20 +245,35 @@ label { display: inline-block; margin-top: 8px; }
     const Pn = noisePowSum / N;
     const snrLinear = (Pn > 0) ? (Ps / Pn) : Infinity;
     const snrDb = Number.isFinite(snrLinear) ? (10 * Math.log10(snrLinear)) : Infinity;
+    // Update norm info with measured sequence power
+    if (normInfo) {
+      normInfo.textContent = `Es used: ${EsUsed.toFixed(3)} (scale=${scale.toFixed(3)}, unnorm Es=${EsAvgUnnormalized.toFixed(3)}), Ps(seq)=${Ps.toFixed(3)}`;
+    }
+    // Es/N0 estimates (order-invariant when normalized)
+    const esn0_est = (Pn > 0) ? (EsUsed / Pn) : Infinity;
+    const ebn0_est = esn0_est / m;
 
     // --- theoretical SNR (decision stage), valid for any f with LS estimator ---
     // Var(Î)=σ²·S/Δ, Var(Q̂)=σ²·C/Δ  ⇒  Pn_th=σ²·(C+S)/Δ; Ps = average(I^2+Q^2)
+    const C_the = Cacc / N, S_the = Sacc / N, Z_the = Zacc / N;
     const det_the = C_the * S_the - Z_the * Z_the;
+    // Use EsUsed (target average Es) instead of sequence Ps
     const snrThLinear = (ns > 0 && det_the > 1e-12)
-      ? (Ps * det_the) / (ns * ns * (C_the + S_the))
+      ? (EsUsed * det_the) / (ns * ns * (C_the + S_the))
       : Infinity;
     const snrThDb = Number.isFinite(snrThLinear) ? (10 * Math.log10(snrThLinear)) : Infinity;
+    const esn0_th = snrThLinear;
+    const ebn0_th = esn0_th / m;
 
     snrDisplay.textContent = `Estimated SNR: ${Number.isFinite(snrDb) ? snrDb.toFixed(2) : '∞'} dB (theory: ${Number.isFinite(snrThDb) ? snrThDb.toFixed(2) : '∞'} dB)`;
     powerDisplay.textContent =
       `Power: Ps=${Ps.toFixed(3)}, Pn=${Pn.toFixed(3)}, ` +
       `SNR(linear)=${Number.isFinite(snrLinear) ? snrLinear.toFixed(2) : '∞'}, ` +
-      `SNR_th(linear)=${Number.isFinite(snrThLinear) ? snrThLinear.toFixed(2) : '∞'}`;
+      `SNR_th(linear)=${Number.isFinite(snrThLinear) ? snrThLinear.toFixed(2) : '∞'}, ` +
+      `Es/N0_est=${Number.isFinite(esn0_est) ? esn0_est.toFixed(2) : '∞'}, ` +
+      `Es/N0_th=${Number.isFinite(esn0_th) ? esn0_th.toFixed(2) : '∞'}, ` +
+      `Eb/N0_est=${Number.isFinite(ebn0_est) ? ebn0_est.toFixed(2) : '∞'}, ` +
+      `Eb/N0_th=${Number.isFinite(ebn0_th) ? ebn0_th.toFixed(2) : '∞'}`;
 
     // ---------- plotting helpers ----------
     function drawWave(ctx, data, yMax, label) {
@@ -335,12 +362,12 @@ label { display: inline-block; margin-top: 8px; }
     drawWave(ctxQsinMix,  QsinMixSamples,  yC, '(I+Q+noise) * sin(2\u03C0f t)');
 
     // Estimated baseband (fixed theoretical axis range with 100% headroom)
-    const yMaxEst = Math.max(1, ((1 << kAxis) - 1) * 2.0);
+    const yMaxEst = Math.max(1, ((1 << kAxis) - 1) * scale * 2.0);
     drawStepWave(ctxIext, Iest, yMaxEst, 'Estimated I(t)');
     // Decision thresholds for current constellation (interior only)
     const thresholds = [];
     const Lthr = 1 << kAxis; // √M levels per axis
-    for (let b = -(Lthr - 2); b <= (Lthr - 2); b += 2) { thresholds.push(b); }
+    for (let b = -(Lthr - 2); b <= (Lthr - 2); b += 2) { thresholds.push(b * scale); }
     drawHorizontalThresholds(ctxIext, thresholds, yMaxEst);
 
     drawStepWave(ctxQext, Qest, yMaxEst, 'Estimated Q(t)');
@@ -356,13 +383,14 @@ label { display: inline-block; margin-top: 8px; }
     ctxConst.fillText('I', Wc - 15, Hc/2 - 5); ctxConst.fillText('Q', Wc/2 + 5, 15);
     ctxConst.font = '14px sans-serif'; ctxConst.fillText('Measured Constellation (Î,Q̂)', 10, 20);
 
-    // Static scaling per current QAM order
+    // Static scaling per current QAM order (display normalized so decision box fills view)
     const margin = 25;
     const Laxis = 1 << kAxis;              // levels per axis (√M)
     const maxAbs = Math.max(1, Laxis - 1); // max |symbol amplitude| (odd levels)
-    const visAbs = Math.max(1, Laxis);     // outer decision boundary at ±√M
+    const visAbs = Math.max(1, Laxis);     // outer decision boundary at ±√M (before normalization)
     const maxRadiusPx = Math.min(Wc, Hc) / 2 - margin;
-    const unitToPx = maxRadiusPx / visAbs; // pixels per amplitude unit
+    // Include normalization so the bounding square (±√M·scale) fills the plot
+    const unitToPx = maxRadiusPx / (visAbs * scale);
 
     // Grid: draw symbol-level lines (odd levels) and decision boundaries (midpoints)
     ctxConst.save();
@@ -372,8 +400,8 @@ label { display: inline-block; margin-top: 8px; }
     ctxConst.setLineDash([3, 6]);
     ctxConst.beginPath();
     for (let lvl = -maxAbs; lvl <= maxAbs; lvl += 2) {
-      const x = Wc/2 + lvl * unitToPx;   // vertical grid at I = lvl
-      const y = Hc/2 - lvl * unitToPx;   // horizontal grid at Q = lvl
+      const x = Wc/2 + (lvl * scale) * unitToPx;   // vertical grid at I = lvl·scale
+      const y = Hc/2 - (lvl * scale) * unitToPx;   // horizontal grid at Q = lvl·scale
       ctxConst.moveTo(x, 0); ctxConst.lineTo(x, Hc);
       ctxConst.moveTo(0, y); ctxConst.lineTo(Wc, y);
     }
@@ -384,24 +412,24 @@ label { display: inline-block; margin-top: 8px; }
     ctxConst.lineWidth = 1.5;
     ctxConst.beginPath();
     for (let b = -visAbs; b <= visAbs; b += 2) {
-      const xB = Wc/2 + b * unitToPx;
-      const yB = Hc/2 - b * unitToPx;
+      const xB = Wc/2 + (b * scale) * unitToPx;
+      const yB = Hc/2 - (b * scale) * unitToPx;
       ctxConst.moveTo(xB, 0); ctxConst.lineTo(xB, Hc);
       ctxConst.moveTo(0, yB); ctxConst.lineTo(Wc, yB);
     }
     ctxConst.stroke();
     // Bounding square around the outer decision region (±√M)
-    const left = Wc/2 - visAbs * unitToPx;
-    const right = Wc/2 + visAbs * unitToPx;
-    const top = Hc/2 - visAbs * unitToPx;
-    const bottom = Hc/2 + visAbs * unitToPx;
+    const left = Wc/2 - (visAbs * scale) * unitToPx;
+    const right = Wc/2 + (visAbs * scale) * unitToPx;
+    const top = Hc/2 - (visAbs * scale) * unitToPx;
+    const bottom = Hc/2 + (visAbs * scale) * unitToPx;
     ctxConst.strokeStyle = '#ddd';
     ctxConst.lineWidth = 2;
     ctxConst.strokeRect(left, top, right - left, bottom - top);
     ctxConst.restore();
 
     const r = 5;
-    const clipAmp = Math.max(0, visAbs - r / unitToPx); // keep full dot inside bounds
+    const clipAmp = Math.max(0, visAbs * scale - r / unitToPx); // keep full dot inside bounds
     for (let sym = 0; sym < N; sym++) {
       const bits = symBitsArr[sym];
       const Ii = Math.max(-clipAmp, Math.min(clipAmp, Iest[sym]));
@@ -421,6 +449,7 @@ label { display: inline-block; margin-top: 8px; }
   freqInput.addEventListener('input', updateSimulation);
   noiseInput.addEventListener('input', updateSimulation);
   modOrderSelect.addEventListener('change', updateSimulation);
+  normCheckbox.addEventListener('change', updateSimulation);
 })();
 </script>
 </body>
