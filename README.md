@@ -6,7 +6,7 @@ An interactive, single‑file HTML/JS simulator for square M‑QAM. Enter a bit 
 
 ## Features
 
-- Modulation order selector: 4‑QAM, 16‑QAM, 64‑QAM, 256‑QAM
+- Modulation order selector: 4‑QAM, 16‑QAM, 64‑QAM, 256‑QAM, 1024‑QAM
 - Bit sequence input (multiple of `log2(M)` bits per symbol)
 - Adjustable carrier frequency `f` (relative to symbol rate)
 - Adjustable noise strength `σ` (AWGN)
@@ -65,7 +65,7 @@ An interactive, single‑file HTML/JS simulator for square M‑QAM. Enter a bit 
 
 ## Controls
 
-- Modulation order `M`: 4, 16, 64, 256
+- Modulation order `M`: 4, 16, 64, 256, 1024
 - Bit sequence: string of `0`/`1` with length a multiple of `log2(M)`
 - Frequency `f`: non‑negative number (relative to symbol rate)
 - Noise strength `σ`: AWGN standard deviation (0 disables noise)
